@@ -33,6 +33,7 @@ import io.undertow.websockets.core.WebSocketChannel
 import io.undertow.websockets.core.WebSockets
 import io.undertow.websockets.jsr.UndertowSession
 import kotlinx.serialization.SerializationStrategy
+import lavalink.server.config.AudioRecoveryConfig
 import lavalink.server.config.ServerConfig
 import lavalink.server.player.LavalinkPlayer
 import moe.kyokobot.koe.KoeClient
@@ -42,6 +43,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.WebSocketSession
 import org.springframework.web.socket.adapter.standard.StandardWebSocketSession
+import java.lang.management.ManagementFactory
 import java.net.InetSocketAddress
 import java.util.*
 import java.util.concurrent.*
@@ -50,6 +52,7 @@ class SocketContext(
     override val sessionId: String,
     val audioPlayerManager: AudioPlayerManager,
     private val serverConfig: ServerConfig,
+    private val audioRecoveryConfig: AudioRecoveryConfig,
     private var session: WebSocketSession,
     private val socketServer: SocketServer,
     statsCollector: StatsCollector,
@@ -79,6 +82,7 @@ class SocketContext(
     private var sessionTimeoutFuture: ScheduledFuture<Unit>? = null
     private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
     val playerUpdateService: ScheduledExecutorService
+    private val gcTimeByName = mutableMapOf<String, Long>()
 
     override val state: ISocketContext.State
         get() = when {
@@ -94,10 +98,32 @@ class SocketContext(
             return newList
         }
 
-
     init {
         val task = statsCollector.createTask(this)
         executor.scheduleAtFixedRate(task, 0, 1, TimeUnit.MINUTES)
+        executor.scheduleAtFixedRate({
+            ManagementFactory.getGarbageCollectorMXBeans().forEach { bean ->
+                val name = bean.name
+                val time = bean.collectionTime
+                val last = gcTimeByName[name] ?: 0L
+                val delta = time - last
+                if (delta > 0) {
+                    log.info("[gc u={}] {} +{}ms (count={})", userId, name, delta, bean.collectionCount)
+                }
+                gcTimeByName[name] = time
+            }
+        }, 10, 10, TimeUnit.SECONDS)
+        executor.scheduleAtFixedRate({
+            if (sessionPaused) return@scheduleAtFixedRate
+            val timeout = serverConfig.idleTimeoutSec
+            if (timeout <= 0) return@scheduleAtFixedRate
+            val now = System.currentTimeMillis()
+            players.values.forEach { player ->
+                if (!player.isPlaying && now - player.getLastActiveMs() > timeout * 1000L) {
+                    destroyPlayer(player.guildId)
+                }
+            }
+        }, 30, 30, TimeUnit.SECONDS)
         playerUpdateService = Executors.newScheduledThreadPool(2) { r ->
             val thread = Thread(r)
             thread.name = "player-update"
@@ -107,9 +133,22 @@ class SocketContext(
     }
 
     override fun getPlayer(guildId: Long) = players.computeIfAbsent(guildId) {
-        val player = LavalinkPlayer(this, guildId, serverConfig, audioPlayerManager, pluginInfoModifiers)
+        val maxPlayers = serverConfig.maxPlayers
+        if (maxPlayers != null && players.size >= maxPlayers) {
+            throw IllegalStateException("Too many players")
+        }
+        val player = LavalinkPlayer(this, guildId, serverConfig, audioRecoveryConfig, audioPlayerManager, pluginInfoModifiers)
         eventEmitter.onNewPlayer(player)
         player
+    }
+
+    fun getGlobalBufferedMs(excludeGuildId: Long? = null): Int {
+        var total = 0
+        players.values.forEach { player ->
+            if (excludeGuildId != null && player.guildId == excludeGuildId) return@forEach
+            total += player.getProviderBufferedMs()
+        }
+        return total
     }
 
     /**

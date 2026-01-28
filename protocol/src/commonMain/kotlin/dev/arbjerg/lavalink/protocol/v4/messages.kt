@@ -106,6 +106,9 @@ sealed interface Message {
             @SerialName("TrackStuckEvent")
             TrackStuck("TrackStuckEvent"),
 
+            @SerialName("TrackPreloadEvent")
+            TrackPreload("TrackPreloadEvent"),
+
             @SerialName("WebSocketClosedEvent")
             WebSocketClosed("WebSocketClosedEvent");
 
@@ -124,6 +127,7 @@ sealed interface Message {
                         Type.TrackEnd -> TrackEndEvent.serializer()
                         Type.TrackException -> TrackExceptionEvent.serializer()
                         Type.TrackStuck -> TrackStuckEvent.serializer()
+                        Type.TrackPreload -> TrackPreloadEvent.serializer()
                         Type.WebSocketClosed -> WebSocketClosedEvent.serializer()
                     }
                 }
@@ -225,6 +229,15 @@ sealed interface Message {
             ) : this(Op.Event, Type.TrackStuck, guildId, track, thresholdMs)
 
             val threshold by lazy { thresholdMs.toDuration(DurationUnit.MILLISECONDS) }
+        }
+
+        @Serializable
+        data class TrackPreloadEvent private constructor(
+            override val op: Op, override val type: Type, override val guildId: String,
+        ) : EmittedEvent {
+            constructor(
+                guildId: String
+            ) : this(Op.Event, Type.TrackPreload, guildId)
         }
 
         @Serializable

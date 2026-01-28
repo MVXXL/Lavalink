@@ -90,6 +90,7 @@ class EventEmitter(
 
     override fun onTrackStuck(player: AudioPlayer, track: AudioTrack, thresholdMs: Long) {
         log.warn("${track.info.title} got stuck! Threshold surpassed: ${thresholdMs}ms")
+        this.player.onTrackStuck()
         this.player.socketContext.sendMessage(
             Message.Serializer,
             Message.EmittedEvent.TrackStuckEvent(
@@ -99,6 +100,13 @@ class EventEmitter(
             )
         )
         sendPlayerUpdate(this.player.socketContext, this.player)
+    }
+
+    fun sendPreloadHint(player: LavalinkPlayer) {
+        player.socketContext.sendMessage(
+            Message.Serializer,
+            Message.EmittedEvent.TrackPreloadEvent(player.guildId.toString())
+        )
     }
 
 }

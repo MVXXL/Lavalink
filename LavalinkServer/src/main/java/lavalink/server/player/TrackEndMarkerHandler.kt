@@ -29,9 +29,9 @@ class TrackEndMarkerHandler(private val player: LavalinkPlayer) : TrackMarkerHan
     }
 
     override fun handle(state: TrackMarkerHandler.MarkerState) {
-        if (state !in APPLICABLE_STATES) {
-            return
-        }
+        if (state !in APPLICABLE_STATES) return
+
+        if (player.trySwapNextSoon()) return
 
         player.endMarkerHit = true
         player.stop()

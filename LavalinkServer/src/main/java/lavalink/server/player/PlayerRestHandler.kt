@@ -34,7 +34,6 @@ class PlayerRestHandler(
     @GetMapping("/v4/sessions/{sessionId}/players")
     private fun getPlayers(@PathVariable sessionId: String): ResponseEntity<Players> {
         val context = socketContext(socketServer, sessionId)
-
         return ResponseEntity.ok(Players(context.players.values.map { it.toPlayer(context, pluginInfoModifiers) }))
     }
 
@@ -42,7 +41,6 @@ class PlayerRestHandler(
     private fun getPlayer(@PathVariable sessionId: String, @PathVariable guildId: Long): ResponseEntity<Player> {
         val context = socketContext(socketServer, sessionId)
         val player = existingPlayer(context, guildId)
-
         return ResponseEntity.ok(player.toPlayer(context, pluginInfoModifiers))
     }
 
@@ -57,20 +55,14 @@ class PlayerRestHandler(
         val context = socketContext(socketServer, sessionId)
 
         if (playerUpdate.track.isPresent() && (playerUpdate.encodedTrack is Omissible.Present || playerUpdate.identifier is Omissible.Present)) {
-            throw ResponseStatusException(
-                HttpStatus.BAD_REQUEST,
-                "Cannot specify both track and encodedTrack/identifier"
-            )
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot specify both track and encodedTrack/identifier")
         }
 
         val track = if (playerUpdate.track.isPresent()) {
             playerUpdate.track
         } else {
             if (playerUpdate.encodedTrack is Omissible.Present || playerUpdate.identifier is Omissible.Present) {
-                PlayerUpdateTrack(
-                    playerUpdate.encodedTrack,
-                    playerUpdate.identifier
-                ).toOmissible()
+                PlayerUpdateTrack(playerUpdate.encodedTrack, playerUpdate.identifier).toOmissible()
             } else {
                 Omissible.Omitted()
             }
@@ -86,7 +78,6 @@ class PlayerRestHandler(
 
         playerUpdate.filters.ifPresent { filters ->
             val invalidFilters = filters.validate(disabledFilters)
-
             if (invalidFilters.isNotEmpty()) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
@@ -96,7 +87,6 @@ class PlayerRestHandler(
         }
 
         playerUpdate.voice.ifPresent {
-            // Discord sometimes sends a partial voice server update missing the endpoint, which can be ignored.
             if (it.endpoint.isEmpty() || it.token.isEmpty() || it.sessionId.isEmpty()) {
                 throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Partial Lavalink voice state: $it")
             }
@@ -120,36 +110,27 @@ class PlayerRestHandler(
                     oldConn.voiceServerInfo?.token != it.token ||
                     oldConn.voiceServerInfo?.sessionId != it.sessionId
                 ) {
-                    //clear old connection
                     context.koe.destroyConnection(guildId)
 
                     val conn = context.getMediaConnection(player)
                     conn.connect(VoiceServerInfo(it.sessionId, it.endpoint, it.token)).exceptionally {
                         throw ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to connect to voice server")
                     }.toCompletableFuture().join()
+
                     player.provideTo(conn)
                 }
             }
         }
 
-        // we handle pause differently for playing new tracks
         val paused = playerUpdate.paused
         paused.takeIfPresent { encodedTrack is Omissible.Omitted && identifier is Omissible.Omitted }
-            ?.let {
-                player.setPause(it)
-            }
+            ?.let { player.setPause(it) }
 
-        // we handle userData differently for playing new tracks
         userData.takeIfPresent { encodedTrack is Omissible.Omitted && identifier is Omissible.Omitted }
-            ?.let {
-                player.track?.userData = it
-            }
+            ?.let { player.track?.userData = it }
 
-        playerUpdate.volume.ifPresent {
-            player.setVolume(it)
-        }
+        playerUpdate.volume.ifPresent { player.setVolume(it) }
 
-        // we handle position differently for playing new tracks
         playerUpdate.position.takeIfPresent { encodedTrack is Omissible.Omitted && identifier is Omissible.Omitted }
             ?.let {
                 if (player.track != null) {
@@ -175,16 +156,14 @@ class PlayerRestHandler(
                 log.info("Skipping play request because of noReplace")
                 return ResponseEntity.ok(player.toPlayer(context, pluginInfoModifiers))
             }
+
             player.setPause(if (paused is Omissible.Present) paused.value else false)
 
             val newTrack: AudioTrack? = if (encodedTrack is Omissible.Present) {
-                encodedTrack.value?.let {
-                    decodeTrack(context.audioPlayerManager, it)
-                }
+                encodedTrack.value?.let { decodeTrack(context.audioPlayerManager, it) }
             } else {
                 val item = try {
                     loadAudioItem(context.audioPlayerManager, (identifier as Omissible.Present).value)
-                    // Safety: loadAudioItem ONLY throws FriendlyException
                 } catch (ex: FriendlyException) {
                     throw ResponseStatusException(HttpStatus.BAD_REQUEST, ex.message, getRootCause(ex))
                 }
@@ -198,14 +177,8 @@ class PlayerRestHandler(
             }
 
             newTrack?.let {
-                playerUpdate.position.ifPresent { position ->
-                    newTrack.position = position
-                }
-
-                userData.ifPresent { userData ->
-                    newTrack.userData = userData
-                }
-
+                playerUpdate.position.ifPresent { position -> newTrack.position = position }
+                userData.ifPresent { ud -> newTrack.userData = ud }
                 playerUpdate.endTime.ifPresent { endTime ->
                     if (endTime != null) {
                         newTrack.setMarker(TrackMarker(endTime, TrackEndMarkerHandler(player)))
@@ -225,6 +198,38 @@ class PlayerRestHandler(
     private fun deletePlayer(@PathVariable sessionId: String, @PathVariable guildId: Long) {
         socketContext(socketServer, sessionId).destroyPlayer(guildId)
     }
+
+    data class NextTrackRequest(
+        val encodedTrack: String,
+        val userData: Any? = null,
+        val position: Long? = null,
+        val endTime: Long? = null
+    )
+
+    @PostMapping("/v4/sessions/{sessionId}/players/{guildId}/next")
+    private fun setNextTrack(
+        @RequestBody payload: NextTrackRequest,
+        @PathVariable sessionId: String,
+        @PathVariable guildId: Long,
+    ): ResponseEntity<Player> {
+        if (payload.encodedTrack.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "encodedTrack must not be blank")
+        }
+
+        val context = socketContext(socketServer, sessionId)
+        val player = context.getPlayer(guildId)
+
+        val track = decodeTrack(context.audioPlayerManager, payload.encodedTrack)
+
+        payload.position?.let { track.position = it }
+        payload.userData?.let { track.userData = it }
+        payload.endTime?.let { endTime ->
+            if (endTime > 0) {
+                track.setMarker(TrackMarker(endTime, TrackEndMarkerHandler(player)))
+            }
+        }
+
+        player.setNextTrack(payload.encodedTrack, track)
+        return ResponseEntity.ok(player.toPlayer(context, pluginInfoModifiers))
+    }
 }
-
-

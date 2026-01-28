@@ -28,6 +28,7 @@ import dev.arbjerg.lavalink.api.ISocketServer
 import dev.arbjerg.lavalink.api.PluginEventHandler
 import dev.arbjerg.lavalink.protocol.v4.Message
 import dev.arbjerg.lavalink.protocol.v4.PlayerState
+import lavalink.server.config.AudioRecoveryConfig
 import lavalink.server.config.ServerConfig
 import lavalink.server.player.LavalinkPlayer
 import moe.kyokobot.koe.Koe
@@ -43,6 +44,7 @@ import java.util.concurrent.ConcurrentHashMap
 @Service
 final class SocketServer(
     private val serverConfig: ServerConfig,
+    private val audioRecoveryConfig: AudioRecoveryConfig,
     val audioPlayerManager: AudioPlayerManager,
     koeOptions: KoeOptions,
     private val eventHandlers: List<PluginEventHandler>,
@@ -68,8 +70,8 @@ final class SocketServer(
 
             val connection = socketContext.getMediaConnection(player).gatewayConnection
             socketContext.sendMessage(
-                    Message.Serializer,
-                    Message.PlayerUpdateEvent(
+                Message.Serializer,
+                Message.PlayerUpdateEvent(
                     PlayerState(
                         System.currentTimeMillis(),
                         player.audioPlayer.playingTrack?.position ?: 0,
@@ -119,6 +121,7 @@ final class SocketServer(
             sessionId,
             audioPlayerManager,
             serverConfig,
+            audioRecoveryConfig,
             session,
             this,
             statsCollector,
@@ -150,7 +153,7 @@ final class SocketServer(
             resumableSessions.remove(context.sessionId)?.let { removed ->
                 log.warn(
                     "Shutdown resumable session with id ${removed.sessionId} because it has the same id as a " +
-                            "newly disconnected resumable session."
+                        "newly disconnected resumable session."
                 )
                 removed.shutdown()
             }
@@ -159,7 +162,7 @@ final class SocketServer(
             context.pause()
             log.info(
                 "Connection closed from ${session.remoteAddress} with status $status -- " +
-                        "Session can be resumed within the next ${context.resumeTimeout} seconds with id ${context.sessionId}",
+                    "Session can be resumed within the next ${context.resumeTimeout} seconds with id ${context.sessionId}",
             )
             return
         }
